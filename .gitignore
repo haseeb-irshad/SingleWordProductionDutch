@@ -168,6 +168,8 @@ __marimo__/
 data/
 features/
 outputs/
+results/
+pretrained_models/
 SingleWordProductionDutch-iBIDS/
 *.nwb
 *.h5
