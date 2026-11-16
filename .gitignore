@@ -168,7 +168,7 @@ __marimo__/
 data/
 features/
 outputs/
-results/
+results/*
 pretrained_models/
 SingleWordProductionDutch-iBIDS/
 *.nwb
@@ -215,3 +215,7 @@ credentials/
 # Editor backups
 *~
 *.swp
+
+# Keep the result figures so that they appear on GitHub
+!results/figures/
+!results/figures/*.png
