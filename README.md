@@ -1,13 +1,17 @@
 # Speech Decoding from sEEG with Griffin-Lim and HiFi-GAN Synthesis
 
-This repository is a modified version of the code accompanying the *Dataset of Speech Production in intracranial Electroencephalography* (Verwoert et al., 2022). It decodes speech from stereo-electroencephalography (sEEG) recordings.
+I worked on this project during a summer research internship at the Advanced Biomedical Instrumentation Centre in Hong Kong in 2026. It builds on the code that accompanies the *Dataset of Speech Production in intracranial Electroencephalography* (Verwoert et al., 2022). In that study, ten native Dutch speakers with drug-resistant epilepsy read single words aloud from a laptop screen. Their brain activity was recorded with stereo-electroencephalography (sEEG) electrodes that had been implanted as part of their clinical treatment. The pipeline reconstructs the sound of each participant's speech from their brain activity alone and turns the result back into audio.
 
 The original code by the dataset authors is available at [neuralinterfacinglab/SingleWordProductionDutch](https://github.com/neuralinterfacinglab/SingleWordProductionDutch).
+
+## Why I made these changes
+
+The original authors turned the decoded spectrograms back into audio with Griffin-Lim. They noted that a substantial part of the audio quality is lost in this step and suggested that state-of-the-art synthesis methods could improve it. I wanted to test this with HiFi-GAN, a modern neural vocoder. To compare the two vocoders fairly, I first had to make sure that the brain features, the spectrograms and the audio were all aligned in time.
 
 ## Changes from the original code
 
 ### Pipeline structure
-- The original scripts (`extract_features.py`, `reconstruction_minimal.py` and `viz_results.py`) have been reorganised into five numbered scripts with a shared data loader and NumPy-style docstrings (see [Running the pipeline](#running-the-pipeline)).
+- I reorganised the original scripts (`extract_features.py`, `reconstruction_minimal.py` and `viz_results.py`) into five numbered scripts with a shared data loader and NumPy-style docstrings (see [Running the pipeline](#running-the-pipeline)).
 - Participants without results are stored as NaN (not a number) rather than zero, so that missing data cannot be mistaken for a genuine result.
 - Random seeds are fixed for the random control and for Griffin-Lim so that results are reproducible.
 
@@ -17,14 +21,14 @@ The original code by the dataset authors is available at [neuralinterfacinglab/S
 - The decoder itself, principal component analysis (PCA) followed by linear regression in 10-fold cross-validation, is unchanged.
 
 ### Audio synthesis
-- A pretrained HiFi-GAN (high-fidelity generative adversarial network) vocoder (Kong, Kim and Bae, 2020) from SpeechBrain (Ravanelli et al., 2021), trained on LibriTTS (Zen et al., 2019) at 16 kHz, is used alongside Griffin-Lim (Griffin and Lim, 1984).
-- The inverse STFT used by Griffin-Lim no longer amplifies the samples at either end of the signal, which previously produced a large spike at the start or end of each file.
+- I added a pretrained HiFi-GAN vocoder (Kong, Kim and Bae, 2020) from SpeechBrain (Ravanelli et al., 2021), trained on LibriTTS (Zen et al., 2019) at 16 kHz, alongside Griffin-Lim (Griffin and Lim, 1984).
+- I fixed the inverse STFT used by Griffin-Lim, which previously amplified the samples at either end of the signal and produced a large spike at the start or end of each file.
 
 ### Evaluation
 - Reconstruction correlations are compared with 1,000 circular-shift random controls, with an empirical p-value for each participant (Phipson and Smyth, 2010).
 - Vocoded audio is time-aligned with the original recording before evaluation. The alignment accounts for the different frame conventions of the two vocoders and for the padding that SpeechBrain's HiFi-GAN adds. It is verified by envelope cross-correlation.
 - Each vocoder is evaluated in an **oracle** condition (ground-truth spectrogram) and a **decoded** condition (predicted spectrogram), which separates the loss caused by the vocoder from the loss caused by decoding.
-- Audio quality is measured with short-time objective intelligibility (STOI) as defined by Taal et al. (2011), log-spectral distance (LSD) and Mel-cepstral distance (MCD). LSD and MCD are computed over speech frames only and the two vocoders are compared with Wilcoxon signed-rank tests with Holm-Bonferroni correction (Holm, 1979).
+- Audio quality is measured with short-time objective intelligibility (STOI) as defined by Taal et al. (2011), log-spectral distance (LSD) and Mel-cepstral distance (MCD). LSD and MCD are computed over speech frames only and the two vocoders are compared using Wilcoxon signed-rank tests with Holm-Bonferroni correction (Holm, 1979).
 - Electrode coverage of the superior temporal gyrus (STG) and ventral sensorimotor cortex (vSMC) is counted from the Destrieux atlas labels (Destrieux et al., 2010) and related to decoding performance.
 - New figures show the acoustic benchmark, waveform comparisons, a close-up spectrogram comparison of both vocoders and the channel coverage analysis.
 
@@ -34,11 +38,17 @@ The figures from a full run are included in `results/figures/`.
 
 - **Decoding.** Mean reconstruction correlations range from 0.46 to 0.82 across the ten participants. Eight of the ten exceed all 1,000 circular-shift random controls.
 - **Vocoders on the ground-truth spectrogram.** HiFi-GAN produced more intelligible speech than Griffin-Lim (higher STOI for all ten participants), whilst Griffin-Lim reproduced the spectral magnitudes more closely (lower LSD and MCD for all ten participants).
-- **Vocoders on the decoded spectrogram.** The two vocoders did not differ significantly on any metric. Most of the quality loss comes from decoding rather than from vocoding.
+- **Vocoders on the decoded spectrogram.** The two vocoders did not differ significantly on any metric. Most of the quality loss comes from decoding rather than from vocoding, so improving the decoder is the clearest next step.
 
 ![Acoustic benchmark of Griffin-Lim and HiFi-GAN](results/figures/acoustic_benchmarking_hifigan_vs_gl.png)
 
 ![Close-up spectrograms of one word for both vocoders](results/figures/vocoder_closeup.png)
+
+## Next steps
+
+- Replace the linear decoder with a non-linear model.
+- Fine-tune HiFi-GAN on decoded spectrograms so that it learns to handle their smoother spectral shape.
+- Estimate channel importance from activation patterns rather than raw decoder weights (Haufe et al., 2014).
 
 ## Repository structure
 
@@ -189,4 +199,4 @@ The original code was released by the Neural Interfacing Lab under the MIT Licen
 
 ## Acknowledgements
 
-I would like to thank the Advanced Biomedical Instrumentation Centre and my supervisors for their support on this project.
+I would like to thank the Advanced Biomedical Instrumentation Centre and my supervisors for their guidance on this project.
