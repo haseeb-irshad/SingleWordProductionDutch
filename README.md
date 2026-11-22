@@ -1,44 +1,49 @@
 # Speech Decoding from sEEG with Griffin-Lim and HiFi-GAN Synthesis
 
-I worked on this project during a summer research internship at the Advanced Biomedical Instrumentation Centre in Hong Kong in 2026. It builds on the code that accompanies the *Dataset of Speech Production in intracranial Electroencephalography* (Verwoert et al., 2022). In that study, ten native Dutch speakers with drug-resistant epilepsy read single words aloud from a laptop screen. Their brain activity was recorded with stereo-electroencephalography (sEEG) electrodes that had been implanted as part of their clinical treatment. The pipeline reconstructs the sound of each participant's speech from their brain activity alone and turns the result back into audio.
+I worked on this project during a summer research internship at the Advanced Biomedical Instrumentation Centre in Hong Kong in 2026. It builds on the code that accompanies the *Dataset of Speech Production in intracranial Electroencephalography* (Verwoert et al., 2022). In that study, ten native Dutch speakers with drug-resistant epilepsy each read 100 words aloud from a laptop screen. Their brain activity was recorded with stereo-electroencephalography (sEEG), a form of intracranial EEG, using electrodes implanted as part of their clinical treatment. The pipeline reconstructs each participant's speech spectrogram from their brain activity alone and turns the result back into audio.
 
 The original code by the dataset authors is available at [neuralinterfacinglab/SingleWordProductionDutch](https://github.com/neuralinterfacinglab/SingleWordProductionDutch).
 
 ## Why I made these changes
 
-The original authors turned the decoded spectrograms back into audio with Griffin-Lim. They noted that a substantial part of the audio quality is lost in this step and suggested that state-of-the-art synthesis methods could improve it. I wanted to test this with HiFi-GAN, a modern neural vocoder. To compare the two vocoders fairly, I first had to make sure that the brain features, the spectrograms and the audio were all aligned in time.
+The original authors turned the decoded spectrograms back into audio with Griffin-Lim. They found that the timing of the reconstructed speech matched the original closely, but that much of the audio quality was lost in this step. They suggested trying a neural vocoder such as WaveGlow or WaveNet. I wanted to test this with HiFi-GAN, a more recent neural vocoder. To compare the two fairly, I first had to make sure that the neural features, the spectrograms and the audio were all aligned in time. I also needed a way to separate the loss caused by the vocoder from the loss caused by the decoder.
 
 ## Changes from the original code
 
-### Pipeline structure
-- I reorganised the original scripts (`extract_features.py`, `reconstruction_minimal.py` and `viz_results.py`) into five numbered scripts with a shared data loader and NumPy-style docstrings (see [Running the pipeline](#running-the-pipeline)).
-- Participants without results are stored as NaN (not a number) rather than zero, so that missing data cannot be mistaken for a genuine result.
-- Random seeds are fixed for the random control and for Griffin-Lim so that results are reproducible.
-
 ### Features and decoding
-- Spectrograms use 80 Mel bins with 64 ms windows and a 16 ms frameshift, computed with the SpeechBrain pipeline that matches the HiFi-GAN vocoder. The original code used 23 Mel bins with 50 ms windows and a 10 ms frameshift.
-- Mel frames are aligned with the intracranial electroencephalography (iEEG) feature windows. SpeechBrain centres its short-time Fourier transform (STFT) frames, so the leading padded frames are removed to give both the same start-anchored framing.
-- The decoder itself, principal component analysis (PCA) followed by linear regression in 10-fold cross-validation, is unchanged.
+- Spectrograms use 80 Mel bins on the Slaney scale with 64 ms windows (1,024 samples) and a 16 ms step (256 samples) at 16 kHz. They are computed with SpeechBrain's `mel_spectrogram` using the settings that the HiFi-GAN checkpoint was trained on. The original code used 23 Mel bins with 50 ms windows and a 10 ms step.
+- The high-gamma features use the same 64 ms windows and 16 ms step, so each feature window lines up with one spectrogram frame. The filtering is the same as before (70-170 Hz band-pass, band-stop filters at 100 and 150 Hz, Hilbert envelope). I also added a common median reference, computed from the channels that are neither flat nor unusually noisy, and a log transform of the envelope before averaging.
+- Temporal context comes from stacking four windows before and four after the current one, spaced 48 ms (3 frames) apart. This covers ±192 ms, close to the original ±200 ms.
+- torchaudio centres each STFT frame by padding 512 samples (32 ms) at the start of the audio, so each spectrogram frame started 32 ms before the matching sEEG window. I drop the first two frames so that frame *k* of both now starts at *k* × 16 ms.
+- The decoder is unchanged. Features are z-scored with training-fold statistics, reduced to 50 principal components and mapped to the spectrogram with ordinary least squares, in 10-fold cross-validation without shuffling.
 
 ### Audio synthesis
 - I added a pretrained HiFi-GAN vocoder (Kong, Kim and Bae, 2020) from SpeechBrain (Ravanelli et al., 2021), trained on LibriTTS (Zen et al., 2019) at 16 kHz, alongside Griffin-Lim (Griffin and Lim, 1984).
-- I fixed the inverse STFT used by Griffin-Lim, which previously amplified the samples at either end of the signal and produced a large spike at the start or end of each file.
+- The Mel filterbank that Griffin-Lim uses to invert the spectrogram now uses the Slaney Mel scale to match SpeechBrain. The original used the HTK formula.
+- Griffin-Lim now runs for 32 iterations instead of 8.
+- The inverse STFT now divides by the summed squared window, which the original computed but never applied, and keeps the last few frames, which the original dropped. The divisor is floored at 10% of its maximum because the samples at either end are covered by only one or two windows and would otherwise be amplified into a spike.
 
 ### Evaluation
-- Reconstruction correlations are compared with 1,000 circular-shift random controls, with an empirical p-value for each participant (Phipson and Smyth, 2010).
-- Vocoded audio is time-aligned with the original recording before evaluation. The alignment accounts for the different frame conventions of the two vocoders and for the padding that SpeechBrain's HiFi-GAN adds. It is verified by envelope cross-correlation.
-- Each vocoder is evaluated in an **oracle** condition (ground-truth spectrogram) and a **decoded** condition (predicted spectrogram), which separates the loss caused by the vocoder from the loss caused by decoding.
-- Audio quality is measured with short-time objective intelligibility (STOI) as defined by Taal et al. (2011), log-spectral distance (LSD) and Mel-cepstral distance (MCD). LSD and MCD are computed over speech frames only and the two vocoders are compared using Wilcoxon signed-rank tests with Holm-Bonferroni correction (Holm, 1979).
-- Electrode coverage of the superior temporal gyrus (STG) and ventral sensorimotor cortex (vSMC) is counted from the Destrieux atlas labels (Destrieux et al., 2010) and related to decoding performance.
-- New figures show the acoustic benchmark, waveform comparisons, a close-up spectrogram comparison of both vocoders and the channel coverage analysis.
+- **Chance level.** The random control is the same as in the original paper. For each of 1,000 shifts, the spectrogram is cut at a random point at least 10% from either end, the two parts are swapped (a circular shift) and the result is correlated with the unshifted spectrogram. I added a p-value, (*b* + 1) / 1,001, where *b* is the number of shifts whose mean correlation across Mel bins matches or beats the decoder's (Phipson and Smyth, 2010).
+- **Oracle and decoded conditions.** Each vocoder is run on the ground-truth spectrogram (oracle) and on the predicted spectrogram (decoded). The oracle condition measures the loss from the vocoder alone and the gap between the two conditions measures the loss from decoding.
+- **Alignment.** The first 12 frames (192 ms) are lost when context is stacked, so the vocoded audio begins 192 ms into the recording for Griffin-Lim. For HiFi-GAN, the offset is about 144 ms. I refine each offset by cross-correlating the amplitude envelopes of the recording and the oracle audio, then apply it to the decoded audio before scoring.
+- **Metrics.** Short-time objective intelligibility (STOI; Taal et al., 2011) is computed on the whole aligned recording. Log-spectral distance (LSD) compares STFT magnitudes after scaling the vocoded audio to the same overall energy as the original. Mel-cepstral distance (MCD) uses cepstral coefficients 1-15, leaving out c0, which only reflects loudness. LSD and MCD are averaged over speech frames only, meaning frames of the original recording within 40 dB of its loudest frame.
+- **Statistics.** The vocoders are compared with two-sided Wilcoxon signed-rank tests across the ten participants with Holm-Bonferroni correction (Holm, 1979) across the six tests (three metrics in two conditions).
+- **Electrode coverage.** The number of contacts in the superior temporal gyrus (STG) and ventral sensorimotor cortex (vSMC) is counted for each participant from the Destrieux atlas labels (Destrieux et al., 2010) and correlated with decoding performance (Pearson's *r*).
+
+### Code structure
+- I reorganised the original scripts (`extract_features.py`, `reconstruction_minimal.py` and `viz_results.py`) into five numbered scripts with a shared data loader and NumPy-style docstrings (see [Running the pipeline](#running-the-pipeline)).
+- Participants without results are stored as NaN rather than zero, so that missing data cannot be mistaken for a genuine result.
+- Random seeds are fixed for the random control and for Griffin-Lim so that results are reproducible.
 
 ## Example results
 
 The figures from a full run are included in `results/figures/`.
 
-- **Decoding.** Mean reconstruction correlations range from 0.46 to 0.82 across the ten participants. Eight of the ten exceed all 1,000 circular-shift random controls.
-- **Vocoders on the ground-truth spectrogram.** HiFi-GAN produced more intelligible speech than Griffin-Lim (higher STOI for all ten participants), whilst Griffin-Lim reproduced the spectral magnitudes more closely (lower LSD and MCD for all ten participants).
-- **Vocoders on the decoded spectrogram.** The two vocoders did not differ significantly on any metric. Most of the quality loss comes from decoding rather than from vocoding, so improving the decoder is the clearest next step.
+- **Decoding.** The mean Pearson correlation between the original and decoded spectrograms, averaged over the 80 Mel bins and 10 folds, ranges from 0.46 (sub-01) to 0.82 (sub-06). Eight of the ten participants beat all 1,000 shifts (p ≈ 0.001), but sub-01 and sub-08 do not. These values are not directly comparable with Verwoert et al. (2022) because the target spectrogram has changed.
+- **Electrode coverage.** Participants with more STG/vSMC contacts decoded better (r = 0.68, p = 0.029), but much of this depends on sub-06, which has 20 contacts against 0-5 for everyone else.
+- **Vocoders on the ground-truth spectrogram.** HiFi-GAN scored higher on STOI than Griffin-Lim for all ten participants, whilst Griffin-Lim scored better (lower) on LSD and MCD for all ten (Holm-corrected p = 0.012 for each).
+- **Vocoders on the decoded spectrogram.** The two vocoders did not differ significantly on any metric. For both, mean STOI falls from about 0.9 on the ground-truth spectrogram to about 0.35 on the decoded one, so most of the quality loss comes from decoding rather than vocoding.
 
 ![Acoustic benchmark of Griffin-Lim and HiFi-GAN](results/figures/acoustic_benchmarking_hifigan_vs_gl.png)
 
@@ -48,7 +53,7 @@ The figures from a full run are included in `results/figures/`.
 
 - Replace the linear decoder with a non-linear model.
 - Fine-tune HiFi-GAN on decoded spectrograms so that it learns to handle their smoother spectral shape.
-- Estimate channel importance from activation patterns rather than raw decoder weights (Haufe et al., 2014).
+- Work out which electrodes matter most using activation patterns rather than raw decoder weights, which can be misleading (Haufe et al., 2014).
 
 ## Repository structure
 
@@ -110,7 +115,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-On Windows, `pip install` installs the central processing unit (CPU) version of PyTorch. To run HiFi-GAN on a graphics processing unit (GPU), install the CUDA build of `torch` and `torchaudio` from [pytorch.org](https://pytorch.org/get-started/locally/) first, using the versions in `requirements.txt`.
+On Windows, `pip install` installs the CPU version of PyTorch. To run HiFi-GAN on a GPU, install the CUDA build of `torch` and `torchaudio` from [pytorch.org](https://pytorch.org/get-started/locally/) first, using the versions in `requirements.txt`.
 
 The HiFi-GAN checkpoint ([speechbrain/tts-hifigan-libritts-16kHz](https://huggingface.co/speechbrain/tts-hifigan-libritts-16kHz)) is downloaded automatically into `pretrained_models/` the first time step 4 runs, so an internet connection is needed for that run.
 
@@ -129,7 +134,7 @@ python step05_results.py
 | Step | Script | What it does | Output |
 |---|---|---|---|
 | 1 | `step01_data_loader.py` | Loads the dataset, checks every participant (sampling rates, channel counts, invalid values, dead channels) and plots diagnostic figures for sub-01 | Console summary and diagnostic plots |
-| 2 | `step02_extract_features.py` | Extracts high-gamma (70-170 Hz) features, adds temporal context and computes 80-bin log-Mel spectrograms | `features/` |
+| 2 | `step02_extract_features.py` | Extracts high-gamma (70-170 Hz) features in 64 ms windows, adds ±192 ms of context and computes 80-bin log-Mel spectrograms | `features/` |
 | 3 | `step03_train_decoder.py` | Decodes the spectrogram with PCA (50 components) and linear regression in 10-fold cross-validation and computes the random control | `results/` |
 | 4 | `step04_audio_synthesis.py` | Synthesises audio from the ground-truth and predicted spectrograms with Griffin-Lim and HiFi-GAN | `results/audio/` |
 | 5 | `step05_results.py` | Runs the statistical tests and acoustic benchmarks and creates all figures | `results/figures/` and console tables |
@@ -153,13 +158,12 @@ Steps 1 and 5 open each figure in a window. Close the window to let the script c
 
 ## Notes and limitations
 
-- **Chance level.** Each trial consists of exactly 2 s of word presentation followed by 1 s of fixation, so circular shifts close to a multiple of 3 s realign speech with speech. The circular-shift control is therefore strict and not every participant exceeds all 1,000 shifts.
-- **Channel importance.** Channel importance is the mean magnitude of the decoder weights. Weights of a linear decoder do not directly show which channels carry speech information (Haufe et al., 2014), so these values should be interpreted with caution.
-- **Electrode coverage.** sub-06 has far more STG/vSMC electrodes than any other participant, so it has a strong influence on the correlation between coverage and decoding performance.
-- **MCD values.** MCD is computed from natural-log Mel spectra with an orthonormal discrete cosine transform (DCT) over 80 bins. Values are comparable within this project but not with MCD values computed from Speech Signal Processing Toolkit (SPTK) Mel-cepstra in the speech synthesis literature.
+- **Chance level.** Each trial shows a word for 2 s followed by a fixation cross for 1 s. A shift close to a multiple of 3 s lines speech up with speech again and gives a high correlation without any decoding, so the control is conservative.
+- **Channel importance.** The decoder weights are mapped back from PCA space to the original features and each channel's importance is its mean absolute weight across Mel bins, context windows and folds. Weights of a linear decoder do not directly show which channels carry speech information (Haufe et al., 2014), so these values should be interpreted with caution.
+- **MCD values.** MCD is computed from natural-log Mel spectra with an orthonormal DCT. Values are comparable within this project but not with MCD values in the speech synthesis literature, which are usually computed with the Speech Signal Processing Toolkit (SPTK).
 - **Highest Mel bins.** The audio is downsampled from 48 kHz to 16 kHz with an anti-aliasing filter that removes most energy above about 6.4 kHz, so correlations drop in the highest Mel bins.
-- **HiFi-GAN.** The vocoder is pretrained on English read speech (LibriTTS) and is not fine-tuned on decoded spectrograms.
-- **vSMC definition.** The Destrieux atlas does not divide the sensorimotor cortex into ventral and dorsal parts, so precentral, postcentral and central sulcus contacts count as vSMC only at or below an anterior commissure-posterior commissure (ACPC) z-coordinate of 40 mm.
+- **HiFi-GAN.** The vocoder is pretrained on English read speech (LibriTTS) and is not fine-tuned on Dutch or on decoded spectrograms.
+- **Brain regions.** STG includes the lateral STG, planum temporale, planum polare and Heschl's gyrus. The Destrieux atlas does not separate ventral from dorsal sensorimotor cortex, so vSMC includes the subcentral gyrus and inferior precentral sulcus, plus precentral, postcentral and central sulcus contacts at or below an ACPC z-coordinate of 40 mm. This cut-off approximates the boundary between the face and larynx areas and the hand area.
 
 ## References
 
@@ -199,4 +203,4 @@ The original code was released by the Neural Interfacing Lab under the MIT Licen
 
 ## Acknowledgements
 
-I would like to thank the Advanced Biomedical Instrumentation Centre and my supervisors for their guidance on this project.
+I would like to thank the Advanced Biomedical Instrumentation Centre and my supervisors for their guidance and support during this project.
